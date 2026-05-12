@@ -1058,6 +1058,8 @@ class Sequence:
         overlay: SeqPlot = None,
         stacked: bool = False,
         show_guides: bool = False,
+        show_rf_shim: bool = False,
+        num_tx_ch: int = 8,
     ) -> SeqPlot:
         """
         Plot `Sequence`.
@@ -1091,6 +1093,12 @@ class Sequence:
             If False, use separate figures for RF/ADC and gradients.
         show_guides : bool, default=False
             If True, enable dynamic vertical hairline guides that follow the cursor. Requires `mplcursors`.
+        show_rf_shim : bool, default=False
+            If True, plot per-channel RF magnitude (Fig 3) and RF phase (Fig 4) for pTx sequences.
+            Shim weights are read from ``rf.shim`` if present; otherwise all channels receive equal
+            weight (magnitude=1, phase=0).
+        num_tx_ch : int, default=8
+            Number of transmit channels to display when ``show_rf_shim=True``.
 
         Returns
         -------
@@ -1110,6 +1118,8 @@ class Sequence:
             overlay,
             stacked,
             show_guides,
+            show_rf_shim,
+            num_tx_ch,
         )
 
     def read(self, file_path: str, detect_rf_use: bool = False, remove_duplicates: bool = True) -> None:
