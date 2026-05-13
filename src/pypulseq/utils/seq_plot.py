@@ -64,8 +64,6 @@ class SeqPlot:
         Shim weights are read from ``rf.shim`` (shape ``(num_tx_ch, 2)``, columns: magnitude, phase)
         when present. Without shim data the raw signal magnitude and phase are shown uniformly on
         all channels.
-    num_tx_ch : int, default=8
-        Number of transmit channels to display when ``show_rf_shim=True``.
 
     Attributes
     ----------
@@ -95,7 +93,6 @@ class SeqPlot:
         stacked: bool = False,
         show_guides: bool = False,
         show_rf_shim: bool = False,
-        num_tx_ch: int = 8,
     ):
         # Handle optional dependencies
         if _MPLCURSORS_AVAILABLE is False:
@@ -153,7 +150,6 @@ class SeqPlot:
                 fig2=fig2,
                 stacked=stacked,
                 show_rf_shim=show_rf_shim,
-                num_tx_ch=num_tx_ch,
             )
         finally:
             # restore interactive state if we changed it
@@ -351,7 +347,6 @@ def _seq_plot(
     fig2,
     stacked,
     show_rf_shim: bool = False,
-    num_tx_ch: int = 8,
 ):
     mpl.rcParams['lines.linewidth'] = 0.75  # Set default Matplotlib linewidth
 
@@ -717,6 +712,21 @@ def _seq_plot(
     ax4: tuple = ()
 
     if show_rf_shim:
+        # Determine num_tx_ch from the first rf_shim extension found in the sequence.
+        num_tx_ch = 0
+        for block_counter in seq.block_events:
+            block = seq.get_block(block_counter)
+            rf_shim_ext = getattr(block, 'rf_shim', None)
+            if rf_shim_ext is not None and rf_shim_ext.shim_vector.size > 0:
+                num_tx_ch = rf_shim_ext.shim_vector.size
+                break
+
+        if num_tx_ch == 0:
+            # No rf_shim extensions found in the sequence; skip pTx plots silently.
+            print('No rf_shim extensions found in the sequence')
+            show_rf_shim = False
+
+    if show_rf_shim:
         fig3 = plt.figure()
         fig4 = plt.figure()
         fig3.suptitle('RF Magnitude per TX Channel')
@@ -725,8 +735,8 @@ def _seq_plot(
         ax3_list: list = []
         ax4_list: list = []
         for i in range(num_tx_ch):
-            share3 = ax3_list[0] if i > 0 else None
-            share4 = ax4_list[0] if i > 0 else None
+            share3 = sp11 if i == 0 else ax3_list[0]
+            share4 = sp11 if i == 0 else ax4_list[0]
             ax3_list.append(fig3.add_subplot(num_tx_ch, 1, i + 1, sharex=share3))
             ax4_list.append(fig4.add_subplot(num_tx_ch, 1, i + 1, sharex=share4))
 
@@ -739,23 +749,27 @@ def _seq_plot(
             if is_valid and getattr(block, 'rf', None) is not None:
                 rf = block.rf
 
-                # Resolve shim weights: expected shape (num_tx_ch, 2) – columns [magnitude, phase].
-                # Fall back to unweighted display when no shim data is attached to the event.
-                shim_array = np.asarray(rf.shim) if rf.shim is not None else None
-                has_shim = shim_array is not None and shim_array.size > 0
+                # Resolve shim weights from the rf_shim extension (block.rf_shim.shim_vector),
+                # which is a complex array of shape (num_tx_ch,) with magnitude and phase encoded.
+                # Fall back to unweighted display when no rf_shim extension is present in the block.
+                rf_shim_ext = getattr(block, 'rf_shim', None)
+                shim_vector = rf_shim_ext.shim_vector if rf_shim_ext is not None else None
+                has_shim = shim_vector is not None and shim_vector.size > 0
                 if has_shim:
-                    shim_mag = shim_array[:, 0]  # per-channel magnitude weight
-                    shim_pha = shim_array[:, 1]  # per-channel constant phase offset (rad)
+                    shim_mag = np.abs(shim_vector)  # per-channel magnitude weight
+                    shim_pha = np.angle(shim_vector)  # per-channel constant phase offset (rad)
 
                 # Zero-pad edges for clean fill_between rendering
                 signal_ptx = rf.signal.copy()
                 time_ptx = rf.t.copy()
-                if np.abs(signal_ptx[0]) != 0:
-                    signal_ptx = np.insert(signal_ptx, 0, 0)
-                    time_ptx = np.insert(time_ptx, 0, time_ptx[0])
-                if np.abs(signal_ptx[-1]) != 0:
-                    signal_ptx = np.append(signal_ptx, 0)
-                    time_ptx = np.append(time_ptx, time_ptx[-1])
+                signal_ptx = np.concatenate(([0], signal_ptx, [0]))
+                time_ptx = np.concatenate(([time_ptx[0]], time_ptx, [time_ptx[-1]]))
+
+
+                signal_ptx_is_real = (
+                        max(np.abs(np.imag(signal_ptx))) / max(np.abs(np.real(signal_ptx))) < 1e-6
+                )
+                signal_ptx_mag = np.real(signal_ptx) if signal_ptx_is_real else np.abs(signal_ptx)
 
                 t_plot_ptx = t_factor * (t0_ptx + time_ptx + rf.delay)
 
@@ -765,7 +779,7 @@ def _seq_plot(
                 for i_ch in range(num_tx_ch):
                     if not has_shim:
                         # No shim data: display raw signal uniformly across all channel rows
-                        mag = np.abs(signal_ptx)
+                        mag = signal_ptx_mag
                         pha = np.angle(
                             signal_ptx
                             * np.exp(1j * full_phase_offset_ptx)
@@ -773,13 +787,18 @@ def _seq_plot(
                         )
                     else:
                         # Apply per-channel magnitude weight and constant phase offset
-                        mag = np.abs(signal_ptx) * shim_mag[i_ch]
-                        pha = np.full(signal_ptx.shape, shim_pha[i_ch])
+                        mag = np.where(np.abs(signal_ptx) > 0, shim_mag[i_ch], 0.0)
+                        pha = np.angle(
+                            signal_ptx
+                            * np.sign(np.real(signal_ptx))
+                            * np.exp(1j * shim_pha[i_ch])
+                        )
+                        pha = np.where(np.abs(signal_ptx) > 0, pha, 0.0)
 
                     ax3_list[i_ch].plot(t_plot_ptx, mag)
-                    ax3_list[i_ch].fill_between(t_plot_ptx, 0, mag, alpha=0.4)
+                    ax3_list[i_ch].fill_between(t_plot_ptx, 0, mag, alpha=0.4) # can be removed
                     ax4_list[i_ch].plot(t_plot_ptx, pha)
-                    ax4_list[i_ch].fill_between(t_plot_ptx, 0, pha, alpha=0.4)
+                    ax4_list[i_ch].fill_between(t_plot_ptx, 0, pha, alpha=0.4) # can be removed
 
             t0_ptx += block_dur
 
@@ -795,8 +814,15 @@ def _seq_plot(
                 if is_last:
                     ax.set_xlabel(f't ({time_disp})')
 
-        ax3_list[0].set_title('Magnitude (a.u.)', fontsize='small', loc='right')
-        ax4_list[0].set_title('Phase (rad)', fontsize='small', loc='right')
+        mag3_max = max(ax.get_ylim()[1] for ax in ax3_list)
+        for ax in ax3_list:
+            ax.set_ylim(0, mag3_max)
+
+        for i_ch in range(num_tx_ch):
+            ax4_list[i_ch].set_ylim(-np.pi, np.pi)
+
+        ax3_list[0].set_title('Magnitude Factor (a.u.)', fontsize='small', loc='right')
+        ax4_list[0].set_title('Phase Factor (rad)', fontsize='small', loc='right')
 
         fig3.tight_layout()
         fig4.tight_layout()

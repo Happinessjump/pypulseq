@@ -1119,7 +1119,6 @@ class Sequence:
             stacked,
             show_guides,
             show_rf_shim,
-            num_tx_ch,
         )
 
     def read(self, file_path: str, detect_rf_use: bool = False, remove_duplicates: bool = True) -> None:
