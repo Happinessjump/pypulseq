@@ -564,7 +564,7 @@ def get_block(self, block_index: int) -> SimpleNamespace:
                 # Reconstruct complex shim vector from interleaved amplitude/phase pairs
                 amplitudes = data[0::2]
                 phases = data[1::2]
-                shim_vector = amplitudes * np.exp(1j * 2 * np.pi * phases)
+                shim_vector = amplitudes * np.exp(1j * phases)
 
                 block.rf_shim = SimpleNamespace(
                     type='rf_shim',
